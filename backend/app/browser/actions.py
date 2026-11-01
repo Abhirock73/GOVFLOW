@@ -390,22 +390,17 @@ class Actions:
                 raise ActionError("missing_data", f"No document {doc_key!r}. Available: {', '.join(keys) or 'none'}. "
                                                   "Ask the citizen to upload it.", candidates=keys)
             loc = await self._locate(info)
-            tmp = Path(tempfile.mkdtemp(prefix=".up-", dir=self.store.settings.uploads_dir))
-            try:
-                path = self.store.materialize_document(self.session.job_id, ref, tmp)
-                if info.type == "file":
-                    await loc.set_input_files(str(path))
-                    count = await loc.evaluate("el => el.files ? el.files.length : 0")
-                    if not count:
-                        raise ActionError("value_mismatch", "The file input did not accept the file.")
-                else:
-                    async with self.session.page.expect_file_chooser(timeout=8000) as chooser:
-                        await loc.click(timeout=5000)
-                    await (await chooser.value).set_files(str(path))
-            finally:
-                for p in tmp.glob("*"):
-                    secure_delete_file(p)
-                shutil.rmtree(tmp, ignore_errors=True)
+            data = self.store.load_document(self.session.job_id, ref.doc_key)
+            payload = {"name": ref.filename, "mimeType": ref.mime_type, "buffer": data}
+            if info.type == "file":
+                await loc.set_input_files(payload)
+                count = await loc.evaluate("el => el.files ? el.files.length : 0")
+                if not count:
+                    raise ActionError("value_mismatch", "The file input did not accept the file.")
+            else:
+                async with self.session.page.expect_file_chooser(timeout=8000) as chooser:
+                    await loc.click(timeout=5000)
+                await (await chooser.value).set_files(payload)
             return f"Attached {ref.filename} ({ref.size_bytes // 1024} KB) to [{element_id}] {info.label!r}.", None
 
         return await self._run("upload_file", element_id, go, {"element_id": element_id, "doc_key": doc_key})

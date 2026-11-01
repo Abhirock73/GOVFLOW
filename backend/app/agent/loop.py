@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -23,14 +22,12 @@ from ..models import (
     ActionType,
     AgentStep,
     CitizenProfile,
-    FieldSource,
     FormPlan,
     GapReport,
     HumanReply,
     HumanRequest,
     HumanRequestKind,
     JobStatus,
-    ProfileField,
     Receipt,
     ServiceRequest,
     StepStatus,
@@ -75,12 +72,12 @@ class AgentLoop:
 
         self.actions = Actions(
             session,
-            resolver=ProfileValueResolver(profile, service.extra_params if service else {}),
+            resolver=ProfileValueResolver(profile, service.extra_params),
             profile=profile,
             store=self.store,
         )
 
-        target_url = str((service.portal_url if service else None) or (plan.portal_url if plan else "http://localhost"))
+        target_url = str(service.portal_url or (plan.portal_url if plan else "http://localhost"))
         self.domain_guard = DomainGuard(target_url, self.settings)
         self.loop_guard = LoopGuard(max_repeats=self.settings.agent_max_same_action_failures)
         self.injection_guard = PromptInjectionGuard()
@@ -94,39 +91,30 @@ class AgentLoop:
         self.receipt: Receipt | None = None
         self.last_feedback: str | None = None
         self.consecutive_failures: int = 0
+        self.captcha_solved_urls: set[str] = set()
+
+    async def _emit_step(self, step: AgentStep) -> None:
+        if self.on_step:
+            res = self.on_step(step)
+            if asyncio.iscoroutine(res):
+                await res
+
+    async def _emit_human_request(self, req: HumanRequest) -> None:
+        if self.on_human_request:
+            res = self.on_human_request(req)
+            if asyncio.iscoroutine(res):
+                await res
 
     def resume_with_reply(self, reply: HumanReply) -> None:
         """Deliver user reply to resume paused loop."""
         self.pending_human_reply = reply
-        if reply.text:
-            text = reply.text.strip()
-            q_lower = (self.pending_human_request.question.lower() if self.pending_human_request else "")
-            email_match = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", text)
-            if email_match:
-                self.profile.email = ProfileField(value=email_match.group(0), confidence=1.0, source=FieldSource.USER_EDIT)
-            elif "name" in q_lower and len(text) > 1:
-                self.profile.name = ProfileField(value=text, confidence=1.0, source=FieldSource.USER_EDIT)
-            elif "phone" in q_lower or "mobile" in q_lower:
-                digits = re.sub(r"\D", "", text)
-                if digits:
-                    self.profile.phone = ProfileField(value=digits[-10:], confidence=1.0, source=FieldSource.USER_EDIT)
-            elif self.service:
-                self.service.extra_params["last_answer"] = text
-
-            if self.store:
-                self.store.save_profile(self.job_id, self.profile)
-
-        # Sync resolver references with updated profile
-        if hasattr(self.actions, "resolver") and self.actions.resolver:
-            self.actions.resolver.profile = self.profile
-            if self.service:
-                self.actions.resolver.extra = self.service.extra_params
-        self.actions.profile = self.profile
-
-        if reply.approved is True or (reply.text and reply.text.strip().lower() in ("yes", "y", "confirm", "proceed", "submit", "approve")):
-            self.submit_guard.confirmed = True
-        elif reply.approved is False:
-            self.submit_guard.confirmed = False
+        if reply.captcha_solved:
+            current_url = self.session.page.url if self.session and self.session.page else ""
+            if current_url:
+                self.captcha_solved_urls.add(current_url)
+        if self.pending_human_request and self.pending_human_request.kind == HumanRequestKind.CONFIRM_SUBMIT:
+            if reply.approved or (reply.text and reply.text.lower() in ("yes", "y", "confirm", "proceed")):
+                self.submit_guard.confirmed = True
         self.pending_human_request = None
         self.status = JobStatus.RUNNING
 
@@ -145,8 +133,7 @@ class AgentLoop:
                 error=f"Exceeded max steps limit ({self.settings.agent_max_steps})",
             )
             self.steps.append(step)
-            if self.on_step:
-                await self.on_step(step)
+            await self._emit_step(step)
             return StepStatus.ERROR
 
         started = time.monotonic()
@@ -157,7 +144,8 @@ class AgentLoop:
         self.injection_guard.check_observation(obs)
 
         # 2. Check for interactive obstacles that require immediate human intervention
-        if obs.has_captcha and not (self.pending_human_reply and self.pending_human_reply.captcha_solved):
+        is_captcha_solved = (obs.url in self.captcha_solved_urls) or (self.pending_human_reply and self.pending_human_reply.captcha_solved)
+        if obs.has_captcha and not is_captcha_solved:
             req = HumanRequest(
                 kind=HumanRequestKind.CAPTCHA,
                 question="A CAPTCHA is present on the page. Please solve it on the live browser preview and click 'Done, resume'.",
@@ -179,25 +167,18 @@ class AgentLoop:
             )
             self.steps.append(step)
             self.step_no += 1
-            if self.on_step:
-                await self.on_step(step)
-            if self.on_human_request:
-                await self.on_human_request(req)
+            await self._emit_step(step)
+            await self._emit_human_request(req)
             return StepStatus.WAITING_HUMAN
 
         # Prepare user turn prompt
         reply_text = None
         if self.pending_human_reply:
             reply_text = self.pending_human_reply.text
-            if not reply_text:
-                if self.pending_human_reply.captcha_solved:
-                    reply_text = "Citizen completed the action / solved CAPTCHA."
-                elif self.pending_human_reply.approved is not None:
-                    reply_text = (
-                        "Citizen explicitly approved final submission. Submit guard is unlocked. Click the submit button now to complete the application."
-                        if self.pending_human_reply.approved
-                        else "Citizen rejected/cancelled submission. Do NOT submit. Ask citizen what to change."
-                    )
+            if self.pending_human_reply.captcha_solved:
+                reply_text = "Citizen solved the CAPTCHA."
+            elif self.pending_human_reply.approved is not None:
+                reply_text = "Approved by citizen." if self.pending_human_reply.approved else "Rejected by citizen."
             self.pending_human_reply = None  # consumed
 
         user_prompt = build_user_turn_prompt(
@@ -209,6 +190,7 @@ class AgentLoop:
             available_profile_refs=self.profile.available_references(),
             last_action_feedback=self.last_feedback,
             pending_human_reply=reply_text,
+            captcha_solved=is_captcha_solved,
         )
 
         sys_prompt = build_system_prompt()
@@ -248,10 +230,8 @@ class AgentLoop:
             )
             self.steps.append(step)
             self.step_no += 1
-            if self.on_step:
-                await self.on_step(step)
-            await asyncio.sleep(1.0)
-            await self.session.settle(timeout_ms=1000)
+            await self._emit_step(step)
+            await self.session.wait(1.0)
             return StepStatus.OK
 
         call = tool_calls[0]
@@ -266,17 +246,11 @@ class AgentLoop:
             except ValueError:
                 kind = HumanRequestKind.MISSING_DATA
 
-            # For confirm_submit, always use actual masked profile values (not symbolic refs from LLM)
-            if kind == HumanRequestKind.CONFIRM_SUBMIT:
-                summary_data = self.profile.masked_summary()
-            else:
-                summary_data = tool_input.get("summary")
-
             req = HumanRequest(
                 kind=kind,
                 question=tool_input.get("question", "Please provide input"),
                 options=tool_input.get("options"),
-                summary=summary_data,
+                summary=tool_input.get("summary"),
             )
             self.pending_human_request = req
             self.status = (
@@ -303,10 +277,8 @@ class AgentLoop:
             )
             self.steps.append(step)
             self.step_no += 1
-            if self.on_step:
-                await self.on_step(step)
-            if self.on_human_request:
-                await self.on_human_request(req)
+            await self._emit_step(step)
+            await self._emit_human_request(req)
             return StepStatus.WAITING_HUMAN
 
         # Handle finish
@@ -319,7 +291,7 @@ class AgentLoop:
                 try:
                     receipt_shot_path = self.store.save_screenshot(self.job_id, obs.screenshot)
                 except Exception as e:
-                    logger.warning("Failed to save receipt screenshot: %s", e)
+                    logger.warning("could not save receipt screenshot: %s", e)
 
             self.receipt = Receipt(
                 job_id=self.job_id,
@@ -350,8 +322,7 @@ class AgentLoop:
             )
             self.steps.append(step)
             self.step_no += 1
-            if self.on_step:
-                await self.on_step(step)
+            await self._emit_step(step)
             return StepStatus.OK
 
         # Handle save_progress
@@ -375,8 +346,7 @@ class AgentLoop:
             )
             self.steps.append(step)
             self.step_no += 1
-            if self.on_step:
-                await self.on_step(step)
+            await self._emit_step(step)
             return StepStatus.OK
 
         # Execute browser action
@@ -387,11 +357,12 @@ class AgentLoop:
             # Submit Guard Check
             if tool_name == "click":
                 target_id = tool_input.get("element_id")
-                target_el = next((e for e in obs.elements if str(e.id) == str(target_id)), None)
+                target_el = next((e for e in obs.elements if e.id == target_id), None)
                 self.submit_guard.check(target_el)
 
             # Run action
             action_res = await self.actions.run(tool_name, tool_input)
+            logger.info("tool %s %s -> ok=%s url=%s msg=%s", tool_name, tool_input, action_res.ok, action_res.url_after, action_res.message)
 
             # Check navigation domain guard
             if action_res.url_after:
@@ -428,8 +399,7 @@ class AgentLoop:
             )
             self.steps.append(step)
             self.step_no += 1
-            if self.on_step:
-                await self.on_step(step)
+            await self._emit_step(step)
             return StepStatus.OK if action_res.ok else StepStatus.ERROR
 
         except GuardViolation as gv:
@@ -438,7 +408,7 @@ class AgentLoop:
                 # Automatically convert submit violation to human confirmation request!
                 req = HumanRequest(
                     kind=HumanRequestKind.CONFIRM_SUBMIT,
-                    question=f"Ready for final submission. Please review and confirm.",
+                    question=f"{gv.message} Would you like to proceed with final submission?",
                     summary=self.profile.masked_summary(),
                 )
                 self.pending_human_request = req
@@ -459,10 +429,8 @@ class AgentLoop:
                 )
                 self.steps.append(step)
                 self.step_no += 1
-                if self.on_step:
-                    await self.on_step(step)
-                if self.on_human_request:
-                    await self.on_human_request(req)
+                await self._emit_step(step)
+                await self._emit_human_request(req)
                 return StepStatus.WAITING_HUMAN
 
             step = AgentStep(
@@ -481,8 +449,9 @@ class AgentLoop:
             )
             self.steps.append(step)
             self.step_no += 1
-            if self.on_step:
-                await self.on_step(step)
+            await self._emit_step(step)
+            self.last_feedback = f"Action blocked by safety guard: {gv.message}"
+            return StepStatus.BLOCKED
             self.last_feedback = f"Action blocked by safety guard: {gv.message}"
             return StepStatus.BLOCKED
 

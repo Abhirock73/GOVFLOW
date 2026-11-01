@@ -62,8 +62,8 @@ SYSTEM_PROMPT = """You are GovFlow AI, an autonomous, highly reliable web agent 
    - If an action fails or leaves the page unchanged after repeated attempts, adjust strategy or ask human for guidance.
 
 7. COMPLETION:
-   When the final submission completes and an acknowledgement / application / tracking number or confirmation message (such as 'Your response has been recorded', 'Application submitted', 'Form submitted', or success screen) is visible on screen:
-   Call `finish(reference_no="...", summary="Application successfully submitted. Reference number: ...")`. If no reference number is shown, use "RECORDED" or a reference like "GOVFLOW-SUCCESS".
+   When the final submission completes and an acknowledgement / application / tracking number or receipt is visible on screen:
+   Call `finish(reference_no="...", summary="Application successfully submitted. Reference number: ...")`.
 """
 
 
@@ -117,6 +117,7 @@ def build_user_turn_prompt(
     available_profile_refs: list[str] | None = None,
     last_action_feedback: str | None = None,
     pending_human_reply: str | None = None,
+    captcha_solved: bool = False,
 ) -> str:
     """Constructs the prompt for the current observation step."""
     sections = [
@@ -127,7 +128,10 @@ def build_user_turn_prompt(
     ]
 
     if observation.has_captcha:
-        sections.append("⚠️ DETECTED CAPTCHA ON PAGE. You must call ask_human(kind='captcha', ...).")
+        if captcha_solved:
+            sections.append("ℹ️ CAPTCHA on this page has already been solved by the citizen. Do NOT ask for CAPTCHA again.")
+        else:
+            sections.append("⚠️ DETECTED CAPTCHA ON PAGE. You must call ask_human(kind='captcha', ...).")
     if observation.has_otp_field:
         sections.append("⚠️ DETECTED OTP FIELD ON PAGE. You must call ask_human(kind='otp', ...).")
     if observation.error_banners:

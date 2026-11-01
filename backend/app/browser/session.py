@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import random
+import shutil
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -25,7 +26,7 @@ from typing import Any
 from urllib.parse import urldefrag, urlparse
 
 from ..config import Settings, get_settings
-from ..security import JobDataStore, get_store, redact_text
+from ..security import JobDataStore, get_store, redact_text, secure_delete_file
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,7 @@ class BrowserSession:
         self.action_lock = asyncio.Lock()
         self.takeover_active = False
         self._page_listeners: list[PageListener] = []
+        self.staged_uploads: list[Path] = []
 
     # -- lifecycle --------------------------------------------------------------
 
@@ -120,6 +122,14 @@ class BrowserSession:
             pass
         self.value_aliases.clear()
         self.sensitive_values.clear()
+        for tmp in self.staged_uploads:
+            try:
+                for p in tmp.glob("*"):
+                    secure_delete_file(p)
+                shutil.rmtree(tmp, ignore_errors=True)
+            except Exception:
+                pass
+        self.staged_uploads.clear()
 
     async def checkpoint(self) -> None:
         """Persist cookies/storage and open tabs, encrypted with the job key."""
@@ -160,6 +170,8 @@ class BrowserSession:
         self.pages.append(page)
         page.on("dialog", lambda d: asyncio.ensure_future(self._on_dialog(d)))
         page.on("close", lambda _p: asyncio.ensure_future(self._on_close(page)))
+        page.on("requestfailed", lambda req: logger.debug("request failed: %s %s: %s", req.method, req.url, req.failure))
+        page.on("pageerror", lambda err: logger.debug("page error: %s", err))
         page.set_default_timeout(15_000)
         previous = self._active
         self._active = page
@@ -266,10 +278,7 @@ class SessionManager:
                 self._pw = await async_playwright().start()
             self._browser = await self._pw.chromium.launch(
                 headless=self.settings.browser_headless,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--run-all-compositor-stages-before-draw",
-                ],
+                args=["--disable-blink-features=AutomationControlled"],
             )
         return self._browser
 

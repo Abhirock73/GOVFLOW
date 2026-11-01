@@ -39,7 +39,6 @@ export const App: React.FC = () => {
   ]);
   const [pendingRequest, setPendingRequest] = useState<HumanRequest | null>(null);
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
-  const [isSubmittingApproval, setIsSubmittingApproval] = useState(false);
   const [wsClient, setWsClient] = useState<GovFlowWebSocket | null>(null);
   const [planData, setPlanData] = useState<any>(null);
   const [gapData, setGapData] = useState<any>(null);
@@ -54,8 +53,19 @@ export const App: React.FC = () => {
 
     const unsubscribe = ws.subscribe((data) => {
       if (data.type === 'status') {
-        setJob((prev) => (prev ? { ...prev, status: data.status, service: data.service || prev.service } : prev));
+        setJob((prev) => (prev ? { ...prev, status: data.status, service: data.service || prev.service, error: data.error || prev.error } : prev));
         if (data.resolution) setResolutionData(data.resolution);
+        if (data.error) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              sender: 'system',
+              text: `⚠️ Notice: ${data.error}`,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            },
+          ]);
+        }
       } else if (data.type === 'step') {
         setSteps((prev) => [...prev, data.step]);
       } else if (data.type === 'human_request') {
@@ -101,6 +111,10 @@ export const App: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.detail || `Server returned ${res.status}`);
+      }
       const data: Job = await res.json();
       setJob(data);
 
@@ -119,8 +133,17 @@ export const App: React.FC = () => {
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         },
       ]);
-    } catch (e) {
+    } catch (e: any) {
       console.error('Failed to create job:', e);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          sender: 'system',
+          text: `Failed to start: ${e.message || 'Please check your connection and configuration.'}`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        },
+      ]);
     }
   };
 
@@ -150,34 +173,22 @@ export const App: React.FC = () => {
   };
 
   const handleHumanReply = async (reply: { text?: string; approved?: boolean; captcha_solved?: boolean }) => {
-    if (!job) return;
-    const reqId = pendingRequest?.request_id || 'chat';
-    if (reply.approved) {
-      setIsSubmittingApproval(true);
-    }
+    if (!job || !pendingRequest) return;
     try {
-      const res = await fetch(`/jobs/${job.job_id}/human-reply`, {
+      await fetch(`/jobs/${job.job_id}/human-reply`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          request_id: reqId,
+          request_id: pendingRequest.request_id,
           text: reply.text,
           approved: reply.approved,
           captcha_solved: reply.captcha_solved,
         }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.profile) {
-          setProfile(data.profile);
-        }
-      }
-    } catch (e) {
-      console.error('Failed to send human reply:', e);
-    } finally {
-      setIsSubmittingApproval(false);
       setPendingRequest(null);
       setIsConfirmModalOpen(false);
+    } catch (e) {
+      console.error('Failed to send human reply:', e);
     }
   };
 
@@ -233,10 +244,6 @@ export const App: React.FC = () => {
         method: 'POST',
         body: fd,
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: 'Failed to parse image' }));
-        throw new Error(err.detail || 'Failed to extract ID details.');
-      }
       const data = await res.json();
       setProfile(data.profile);
       setMessages((prev) => [
@@ -248,17 +255,8 @@ export const App: React.FC = () => {
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         },
       ]);
-    } catch (e: any) {
+    } catch (e) {
       console.error('ID upload failed:', e);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now().toString(),
-          sender: 'agent',
-          text: `ID extraction note: ${e.message || 'Please upload a clear JPG, PNG, or PDF file.'}`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        },
-      ]);
     }
   };
 
@@ -384,6 +382,26 @@ export const App: React.FC = () => {
             />
           )}
 
+          {/* Resolving Banner */}
+          {job && job.status === 'resolving' && (
+            <div className="bg-sky-50 border border-sky-200 rounded-xl p-3 flex items-center gap-2.5">
+              <div className="w-4 h-4 border-2 border-sky-600 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+              <span className="text-xs text-sky-900 font-medium">
+                Searching official portal databases and verifying domain authenticity...
+              </span>
+            </div>
+          )}
+
+          {/* Planning Banner */}
+          {job && job.status === 'planning' && (
+            <div className="bg-sky-50 border border-sky-200 rounded-xl p-3 flex items-center gap-2.5">
+              <div className="w-4 h-4 border-2 border-sky-600 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+              <span className="text-xs text-sky-900 font-medium">
+                Inspecting form structure, required fields, and eligibility rules...
+              </span>
+            </div>
+          )}
+
           {/* Start Filling Button after gap ready */}
           {job && (job.status === 'intake' || job.status === 'awaiting_missing_data') && (
             <div className="bg-sky-50 border border-sky-200 rounded-xl p-3 flex items-center justify-between">
@@ -397,6 +415,16 @@ export const App: React.FC = () => {
                 <Play className="w-3.5 h-3.5" />
                 <span>Start Filling Live</span>
               </button>
+            </div>
+          )}
+
+          {/* Running Status Banner */}
+          {job && job.status === 'running' && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 flex items-center gap-2">
+              <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-ping flex-shrink-0" />
+              <span className="text-xs text-emerald-900 font-medium">
+                Autonomous browser automation running live. Watching steps in real time...
+              </span>
             </div>
           )}
 
@@ -418,7 +446,9 @@ export const App: React.FC = () => {
                   timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                 },
               ]);
-              handleHumanReply({ text });
+              if (pendingRequest) {
+                handleHumanReply({ text });
+              }
             }}
             onUploadVoice={handleUploadVoice}
             onUploadId={handleUploadId}
@@ -444,7 +474,6 @@ export const App: React.FC = () => {
         isOpen={isConfirmModalOpen}
         summary={pendingRequest?.summary || {}}
         lang={lang}
-        isSubmitting={isSubmittingApproval}
         onConfirm={() => handleHumanReply({ approved: true })}
         onCancel={() => handleHumanReply({ approved: false })}
       />

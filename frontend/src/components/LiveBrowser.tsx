@@ -44,8 +44,8 @@ export const LiveBrowser: React.FC<LiveBrowserProps> = ({
     if (isTakeover) {
       wsClient.sendTakeoverEnd();
       setIsTakeover(false);
-      if (pendingRequest) {
-        onHumanReply({ captcha_solved: true, text: 'Takeover completed' });
+      if (pendingRequest?.kind === 'captcha') {
+        onHumanReply({ captcha_solved: true });
       }
     } else {
       wsClient.sendTakeoverBegin('Citizen takeover');
@@ -97,13 +97,6 @@ export const LiveBrowser: React.FC<LiveBrowserProps> = ({
 
         <div className="flex items-center gap-2">
           <button
-            onClick={() => wsClient?.send({ type: 'refresh_stream' })}
-            title="Refresh stream"
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-          </button>
-          <button
             onClick={toggleTakeover}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition ${
               isTakeover
@@ -146,29 +139,22 @@ export const LiveBrowser: React.FC<LiveBrowserProps> = ({
             </div>
           )}
 
-          {pendingRequest.kind !== 'otp' && (
-            <div className="flex items-center gap-2 flex-shrink-0">
-              {!isTakeover && (
-                <button
-                  onClick={toggleTakeover}
-                  className="px-3 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded text-xs font-medium flex-shrink-0"
-                >
-                  Take Over Browser
-                </button>
-              )}
-              <button
-                onClick={() => {
-                  if (isTakeover) {
-                    wsClient?.sendTakeoverEnd();
-                    setIsTakeover(false);
-                  }
-                  onHumanReply({ captcha_solved: true, text: 'Done' });
-                }}
-                className="px-3 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-xs font-medium flex-shrink-0"
-              >
-                Done, Resume Agent
-              </button>
-            </div>
+          {pendingRequest.kind === 'captcha' && !isTakeover && (
+            <button
+              onClick={toggleTakeover}
+              className="px-3 py-1 bg-slate-900 text-white rounded text-xs font-medium flex-shrink-0"
+            >
+              Click to Solve
+            </button>
+          )}
+
+          {pendingRequest.kind === 'captcha' && isTakeover && (
+            <button
+              onClick={toggleTakeover}
+              className="px-3 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-xs font-medium flex-shrink-0"
+            >
+              Solved, Resume
+            </button>
           )}
         </div>
       )}
@@ -192,10 +178,20 @@ export const LiveBrowser: React.FC<LiveBrowserProps> = ({
             alt="Live browser stream"
             className="w-full h-full object-contain select-none pointer-events-none"
           />
-        ) : (
+        ) : wsClient ? (
           <div className="text-center text-slate-500 text-xs p-6 space-y-2">
             <RefreshCw className="w-8 h-8 mx-auto animate-spin text-slate-600" />
-            <p>Waiting for live browser session to initialize...</p>
+            <p>Launching browser and waiting for live stream...</p>
+          </div>
+        ) : (
+          <div className="text-center text-slate-500 text-xs p-6 space-y-3 max-w-xs">
+            <Monitor className="w-10 h-10 mx-auto text-slate-600 stroke-[1.5]" />
+            <div className="space-y-1">
+              <p className="font-medium text-slate-300">Live Browser Session</p>
+              <p className="text-[11px] text-slate-500">
+                Click <strong className="text-sky-400">"Start Application"</strong> above to discover the portal and begin autonomous form filling.
+              </p>
+            </div>
           </div>
         )}
 

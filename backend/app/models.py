@@ -477,22 +477,6 @@ class CitizenProfile(BaseModel):
             raise InvalidProfileReference(f"unknown profile field: {name}")
         return getattr(self, name)
 
-    def masked_summary(self) -> dict[str, str]:
-        """Return a dictionary of field names to their masked values for review."""
-        out: dict[str, str] = {}
-        for name in self.FIELD_NAMES:
-            field = self.get_field(name)
-            if field.is_set:
-                val = str(field.value)
-                if name in ("id_number", "phone"):
-                    out[name] = f"****{val[-4:]}" if len(val) >= 4 else "****"
-                elif name == "email" and "@" in val:
-                    parts = val.split("@", 1)
-                    out[name] = f"{parts[0][:2]}***@{parts[1]}"
-                else:
-                    out[name] = val
-        return out
-
     def fields_needing_confirmation(self, threshold: float) -> list[str]:
         return [n for n in self.FIELD_NAMES if self.get_field(n).needs_confirmation(threshold)]
 
@@ -502,6 +486,14 @@ class CitizenProfile(BaseModel):
 
     def document(self, doc_key: str) -> DocumentRef | None:
         return next((d for d in self.documents if d.doc_key == doc_key), None)
+
+    def add_document(self, ref: DocumentRef) -> None:
+        self.documents = [d for d in self.documents if d.doc_key != ref.doc_key]
+        self.documents.append(ref)
+
+    def masked_summary(self) -> dict[str, str]:
+        from .security import mask_profile
+        return mask_profile(self)
 
     def available_references(self) -> list[str]:
         """Symbolic references the agent may use, for the system prompt.
