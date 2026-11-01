@@ -1,0 +1,61 @@
+# Real-world public application and scheme pages for read-only evaluation.
+# The agent runs ONLY the Phase 2 resolver and planner (read-only exploration).
+# No data is entered, no buttons are submitted.
+
+portals:
+  - id: nsp_central
+    name: "National Scholarship Portal - Central Schemes"
+    url: "https://scholarships.gov.in"
+    expected_service: "National Scholarship"
+    expected_official: true
+    min_fields_detected: 6
+    known_features: ["multi_step", "captcha", "file_upload"]
+
+  - id: sarathi_parivahan
+    name: "Parivahan Sewa - Driving Licence Services"
+    url: "https://sarathi.parivahan.gov.in"
+    expected_service: "Driving Licence Renewal"
+    expected_official: true
+    min_fields_detected: 4
+    known_features: ["otp", "state_select"]
+
+  - id: pm_kisan
+    name: "PM-Kisan Samman Nidhi Portal"
+    url: "https://pmkisan.gov.in"
+    expected_service: "PM-Kisan Beneficiary"
+    expected_official: true
+    min_fields_detected: 3
+    known_features: ["aadhaar_auth", "bank_details"]
+
+  - id: passport_india
+    name: "Passport Seva Portal"
+    url: "https://portal2.passportindia.gov.in"
+    expected_service: "Passport Application"
+    expected_official: true
+    min_fields_detected: 8
+    known_features: ["login_required", "multi_step"]
+
+  - id: ssp_karnataka
+    name: "State Scholarship Portal - Karnataka"
+    url: "https://ssp.postmatric.karnataka.gov.in"
+    expected_service: "Post-Matric Scholarship"
+    expected_official: true
+    min_fields_detected: 5
+    known_features: ["cascading_dropdown", "captcha"]
+
+  - id: bsedc_kushal_yuva
+    name: "Bihar Skill Development - Kushal Yuva Program"
+    url: "https://skillmissionbihar.org"
+    expected_service: "Kushal Yuva Program"
+    expected_official: true
+    min_fields_detected: 4
+    known_features: ["advisory_popup", "domicile_check"]
+
+  - id: epfindia
+    name: "EPFO Member Portal"
+    url: "https://unifiedportal-mem.epfindia.gov.in"
+    expected_service: "EPF Claim & Passbook"
+    expected_official: true
+    min_fields_detected: 3
+    known_features: ["captcha", "uan_login"]
+

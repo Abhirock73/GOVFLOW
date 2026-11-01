@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-5-5}
+      - GOVFLOW_ENV=dev
+      - LOG_LEVEL=INFO
+      - GOVFLOW_DATA_DIR=/app/data
+    volumes:
+      - govflow-data:/app/data
+    depends_on:
+      - testbed_scholarship
+      - testbed_license
+      - testbed_subsidy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+
+  testbed_scholarship:
+    build:
+      context: .
+      dockerfile: testbed/Dockerfile
+    command: python -m testbed.scholarship.app
+    ports:
+      - "8081:8081"
+
+  testbed_license:
+    build:
+      context: .
+      dockerfile: testbed/Dockerfile
+    command: python -m testbed.license_renewal.app
+    ports:
+      - "8082:8082"
+
+  testbed_subsidy:
+    build:
+      context: .
+      dockerfile: testbed/Dockerfile
+    command: python -m testbed.subsidy.app
+    ports:
+      - "8083:8083"
+
+volumes:
+  govflow-data:
+
